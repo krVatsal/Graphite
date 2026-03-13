@@ -1267,6 +1267,8 @@ impl ShapeState {
 		skip_opposite_handle: bool,
 		responses: &mut VecDeque<Message>,
 	) {
+		const GEOMETRIC_COLINEAR_DOT_THRESHOLD: f64 = -0.999;
+
 		for (&layer, state) in &self.selected_shape_state {
 			let Some(vector) = document.network_interface.compute_modified_vector(layer) else { continue };
 
@@ -1312,14 +1314,34 @@ impl ShapeState {
 
 				let Some(anchor_position) = vector.point_domain.position_from_id(anchor_id) else { continue };
 
-				let Some(handle_position) = point.get_position(&vector) else { continue };
-				let handle_position = handle_position + delta;
+				let Some(previous_handle_position) = point.get_position(&vector) else { continue };
+				let handle_position = previous_handle_position + delta;
 
 				let modification_type = handle.set_relative_position(handle_position - anchor_position);
 
 				responses.add(GraphOperationMessage::Vector { layer, modification_type });
 
-				let Some(other) = vector.other_colinear_handle(handle) else { continue };
+				let other = vector.other_colinear_handle(handle).or_else(|| {
+					let [handle_a, handle_b] = point.get_handle_pair(&vector)?;
+					let fallback_other = if handle_a == handle {
+						handle_b
+					} else if handle_b == handle {
+						handle_a
+					} else {
+						return None;
+					};
+
+					let Some(fallback_other_position) = fallback_other.to_manipulator_point().get_position(&vector) else {
+						return None;
+					};
+
+					let selected_direction = (previous_handle_position - anchor_position).try_normalize()?;
+					let opposite_direction = (fallback_other_position - anchor_position).try_normalize()?;
+
+					(selected_direction.dot(opposite_direction) <= GEOMETRIC_COLINEAR_DOT_THRESHOLD).then_some(fallback_other)
+				});
+
+				let Some(other) = other else { continue };
 
 				if skip_opposite_handle {
 					continue;
